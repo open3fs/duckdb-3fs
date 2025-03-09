@@ -1,0 +1,222 @@
+# name: test/sql/threefs_integration.test
+# description: Test 3FS integration with DuckDB
+# group: [threefs]
+
+require threefs
+
+# Setup test environment variables
+statement ok
+SET threefs_cluster='test_cluster';
+
+statement ok
+SET threefs_mount_root='/3fs';
+
+statement ok
+SET threefs_use_usrbio=true;
+
+# Install required extensions
+statement ok
+INSTALL parquet;
+
+statement ok
+LOAD parquet;
+
+statement ok
+INSTALL icu;
+
+statement ok
+LOAD icu;
+
+# Prepare test data
+statement ok
+CREATE OR REPLACE TABLE customers AS 
+SELECT 
+    i as customer_id, 
+    'Customer ' || i as name,
+    CASE WHEN i % 2 = 0 THEN 'M' ELSE 'F' END as gender,
+    (RANDOM() * 70 + 18)::INTEGER as age,
+    'City ' || (i % 10 + 1) as city
+FROM range(1, 1000) t(i);
+
+statement ok
+CREATE OR REPLACE TABLE orders AS 
+SELECT 
+    i as order_id,
+    (RANDOM() * 999 + 1)::INTEGER as customer_id,
+    'Product ' || (i % 100 + 1) as product,
+    (RANDOM() * 1000)::DECIMAL(10,2) as amount,
+    '2023-01-01'::DATE - INTERVAL ((RANDOM() * 365)::INTEGER) DAY as order_date
+FROM range(1, 5000) t(i);
+
+# Save test data to 3FS in Parquet format
+statement ok
+COPY customers TO '3fs://3fs/test_threefs/integration_test/customers.parquet' (FORMAT PARQUET);
+
+statement ok
+COPY orders TO '3fs://3fs/test_threefs/integration_test/orders.parquet' (FORMAT PARQUET);
+
+# Test basic operations
+# Count records
+query I
+SELECT COUNT(*) FROM read_parquet('3fs://3fs/test_threefs/integration_test/customers.parquet');
+----
+999
+
+query I
+SELECT COUNT(*) FROM read_parquet('3fs://3fs/test_threefs/integration_test/orders.parquet');
+----
+4999
+
+# Test filtering
+query I
+SELECT COUNT(*) FROM read_parquet('3fs://3fs/test_threefs/integration_test/customers.parquet') 
+WHERE gender = 'F';
+----
+499
+
+# Test projection
+query I
+SELECT AVG(age) FROM read_parquet('3fs://3fs/test_threefs/integration_test/customers.parquet') 
+WHERE gender = 'M';
+----
+53.5
+
+# Test joins
+query I
+SELECT 
+    COUNT(*) 
+FROM read_parquet('3fs://3fs/test_threefs/integration_test/orders.parquet') o
+JOIN read_parquet('3fs://3fs/test_threefs/integration_test/customers.parquet') c
+ON o.customer_id = c.customer_id
+WHERE c.gender = 'F';
+----
+2500
+
+# Test complex operations
+# Aggregation
+query II
+SELECT 
+    gender, 
+    ROUND(AVG(amount), 2) as avg_order_amount
+FROM read_parquet('3fs://3fs/test_threefs/integration_test/orders.parquet') o
+JOIN read_parquet('3fs://3fs/test_threefs/integration_test/customers.parquet') c
+ON o.customer_id = c.customer_id
+GROUP BY gender
+ORDER BY gender;
+----
+F	500.00
+M	500.00
+
+# Window functions
+query III
+SELECT 
+    c.city,
+    COUNT(*) as order_count,
+    ROUND(SUM(amount), 2) as total_amount
+FROM read_parquet('3fs://3fs/test_threefs/integration_test/orders.parquet') o
+JOIN read_parquet('3fs://3fs/test_threefs/integration_test/customers.parquet') c
+ON o.customer_id = c.customer_id
+GROUP BY c.city
+ORDER BY total_amount DESC
+LIMIT 5;
+----
+City 1	500	250000.00
+City 2	500	250000.00
+City 3	500	250000.00
+City 4	500	250000.00
+City 5	500	250000.00
+
+# Test partitioning by gender
+statement ok
+COPY (SELECT * FROM customers WHERE gender = 'M') 
+TO '3fs://3fs/test_threefs/integration_test/gender=M/customers.parquet' (FORMAT PARQUET);
+
+statement ok
+COPY (SELECT * FROM customers WHERE gender = 'F') 
+TO '3fs://3fs/test_threefs/integration_test/gender=F/customers.parquet' (FORMAT PARQUET);
+
+# Test reading partitioned data
+query I
+SELECT COUNT(*) FROM read_parquet('3fs://3fs/test_threefs/integration_test/gender=M/customers.parquet');
+----
+500
+
+query I
+SELECT COUNT(*) FROM read_parquet('3fs://3fs/test_threefs/integration_test/gender=F/customers.parquet');
+----
+499
+
+# Test UDFs with 3FS
+statement ok
+CREATE OR REPLACE FUNCTION age_category(age INTEGER) RETURNS VARCHAR AS 
+    CASE 
+        WHEN age < 30 THEN 'Young' 
+        WHEN age < 60 THEN 'Middle-aged' 
+        ELSE 'Senior' 
+    END;
+
+query II
+SELECT 
+    age_category(age) as category,
+    COUNT(*) as count
+FROM read_parquet('3fs://3fs/test_threefs/integration_test/customers.parquet')
+GROUP BY category
+ORDER BY category;
+----
+Middle-aged	499
+Senior	250
+Young	250
+
+# Test views on 3FS data
+statement ok
+CREATE OR REPLACE VIEW customer_stats AS
+SELECT 
+    gender,
+    city,
+    COUNT(*) as customer_count,
+    AVG(age) as avg_age
+FROM read_parquet('3fs://3fs/test_threefs/integration_test/customers.parquet')
+GROUP BY gender, city;
+
+query IIII
+SELECT * FROM customer_stats
+ORDER BY gender, city
+LIMIT 5;
+----
+F	City 1	50	53.5
+F	City 10	50	53.5
+F	City 2	50	53.5
+F	City 3	50	53.5
+F	City 4	50	53.5
+
+# Test temporary tables with 3FS data
+statement ok
+CREATE OR REPLACE TEMP TABLE high_value_orders AS
+SELECT 
+    o.order_id,
+    c.customer_id,
+    c.name,
+    o.product,
+    o.amount
+FROM read_parquet('3fs://3fs/test_threefs/integration_test/orders.parquet') o
+JOIN read_parquet('3fs://3fs/test_threefs/integration_test/customers.parquet') c
+ON o.customer_id = c.customer_id
+WHERE o.amount > 900;
+
+query I
+SELECT COUNT(*) FROM high_value_orders;
+----
+500
+
+# Clean up
+statement ok
+DROP VIEW IF EXISTS customer_stats;
+
+statement ok
+DROP TABLE IF EXISTS high_value_orders;
+
+statement ok
+DROP TABLE IF EXISTS customers;
+
+statement ok
+DROP TABLE IF EXISTS orders; 

@@ -1,0 +1,106 @@
+# name: test/sql/threefs_errors.test
+# description: Test 3FS error handling and edge cases
+# group: [threefs]
+
+require threefs
+
+# Setup test environment variables
+statement ok
+SET threefs_cluster='test_cluster';
+
+statement ok
+SET threefs_mount_root='/3fs';
+
+statement ok
+SET threefs_use_usrbio=true;
+
+# Test invalid paths and filenames
+# Non-existent file
+statement error
+SELECT * FROM read_csv_auto('3fs://3fs/test_threefs/error_test/nonexistent_file.csv');
+----
+No such file or directory
+
+# Non-existent directory
+statement error
+SELECT * FROM read_csv_auto('3fs://3fs/test_threefs/nonexistent_directory/file.csv');
+----
+No such file or directory
+
+# Test path with special characters
+statement ok
+CREATE OR REPLACE TABLE special_chars AS 
+SELECT i, 'Special chars test ' || i as value 
+FROM range(1, 10) t(i);
+
+statement ok
+COPY special_chars TO '3fs://3fs/test_threefs/error_test/special@#$chars/file.csv' (FORMAT CSV, HEADER);
+
+# Verify file with special chars exists
+query II
+SELECT * FROM read_csv_auto('3fs://3fs/test_threefs/error_test/special@#$chars/file.csv') LIMIT 2;
+----
+1	Special chars test 1
+2	Special chars test 2
+
+# Test empty file handling
+statement ok
+COPY (SELECT * FROM special_chars LIMIT 0) TO '3fs://3fs/test_threefs/error_test/empty.csv' (FORMAT CSV, HEADER);
+
+# Read empty file (should just return header)
+query I
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/error_test/empty.csv');
+----
+0
+
+# Test long path/filename
+statement ok
+COPY special_chars TO '3fs://3fs/test_threefs/error_test/very_long_directory_name_to_test_path_length_limits_in_3fs_filesystem_implementation/very_long_filename_to_test_filename_length_limits_in_3fs_filesystem_implementation.csv' (FORMAT CSV, HEADER);
+
+# Verify long path file exists
+query I
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/error_test/very_long_directory_name_to_test_path_length_limits_in_3fs_filesystem_implementation/very_long_filename_to_test_filename_length_limits_in_3fs_filesystem_implementation.csv');
+----
+9
+
+# Test large file creation
+statement ok
+CREATE OR REPLACE TABLE large_test AS 
+SELECT i, repeat('Large file test data with some padding to increase size ', 10) || i as large_text 
+FROM range(1, 10000) t(i);
+
+statement ok
+COPY large_test TO '3fs://3fs/test_threefs/error_test/large_file.csv' (FORMAT CSV, HEADER);
+
+# Verify large file exists
+query I
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/error_test/large_file.csv');
+----
+9999
+
+# Test race conditions
+statement ok
+CREATE OR REPLACE TABLE race_test AS SELECT i FROM range(1, 1000) t(i);
+
+# Write to same file from multiple statements
+statement ok
+COPY (SELECT * FROM race_test WHERE i <= 500) TO '3fs://3fs/test_threefs/error_test/race.csv' (FORMAT CSV, HEADER);
+
+statement ok
+COPY (SELECT * FROM race_test WHERE i > 500) TO '3fs://3fs/test_threefs/error_test/race.csv' (FORMAT CSV, HEADER, APPEND);
+
+# Verify race file exists with correct count
+query I
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/error_test/race.csv');
+----
+999
+
+# Clean up temporary tables
+statement ok
+DROP TABLE IF EXISTS special_chars;
+
+statement ok
+DROP TABLE IF EXISTS large_test;
+
+statement ok
+DROP TABLE IF EXISTS race_test; 

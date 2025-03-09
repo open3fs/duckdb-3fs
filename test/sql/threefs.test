@@ -1,0 +1,56 @@
+# name: test/sql/threefs.test
+# description: Test 3FS extension loading and basic functionality
+# group: [threefs]
+
+# This will fail before loading the extension
+statement error
+SELECT '3fs://3fs/test.csv';
+----
+No filesystem registered for prefix "3fs"
+
+# Ensure the test uses threefs extension
+require threefs
+
+# Confirm the extension is loaded and recognizes the 3fs:// protocol
+query I
+SELECT '3fs://3fs/test.csv' LIKE '3fs://%';
+----
+true
+
+# Test extension configuration parameters
+statement ok
+SET threefs_cluster='test_cluster';
+
+statement ok
+SET threefs_mount_root='/3fs';
+
+statement ok
+SET threefs_use_usrbio=false;
+
+# Create a simple table
+statement ok
+CREATE OR REPLACE TABLE numbers AS SELECT range AS number FROM range(0, 1000);
+
+# Test writing data to 3FS
+statement ok
+COPY numbers TO '3fs://3fs/test_threefs/basic_test/test_output.csv' (FORMAT CSV, HEADER);
+
+# Test reading data from 3FS
+query I
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/basic_test/test_output.csv');
+----
+1000
+
+# Test file paths
+query I
+SELECT * FROM read_csv_auto('3fs://3fs/test_threefs/basic_test/test_output.csv') LIMIT 5;
+----
+0
+1
+2
+3
+4
+
+# Clean up temporary tables
+statement ok
+DROP TABLE IF EXISTS numbers; 

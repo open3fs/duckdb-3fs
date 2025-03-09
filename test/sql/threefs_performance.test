@@ -1,0 +1,100 @@
+# name: test/sql/threefs_performance.test
+# description: Test 3FS filesystem performance
+# group: [threefs]
+
+require threefs
+
+# Setup test environment variables
+statement ok
+SET threefs_cluster='test_cluster';
+
+statement ok
+SET threefs_mount_root='/3fs';
+
+statement ok
+SET threefs_use_usrbio=true;
+
+# Install parquet extension for testing various formats
+statement ok
+INSTALL parquet;
+
+statement ok
+LOAD parquet;
+
+# Generate test data for performance testing
+statement ok
+CREATE OR REPLACE TABLE medium_data AS 
+SELECT i, 'Row ' || i || repeat(' padding text', 10) as content 
+FROM range(1, 100000) t(i);
+
+# Generate local file for comparison
+statement ok
+COPY medium_data TO '/tmp/local_medium.csv' (FORMAT CSV, HEADER);
+
+# Generate 3FS file
+statement ok
+COPY medium_data TO '3fs://3fs/test_threefs/perf_test/medium.csv' (FORMAT CSV, HEADER);
+
+# Test file reading performance
+# Local file reading
+statement ok
+SELECT COUNT(*) FROM read_csv_auto('/tmp/local_medium.csv');
+
+# 3FS file reading
+statement ok
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/perf_test/medium.csv');
+
+# Test different buffer sizes
+# Small buffer (1KB)
+statement ok
+SET threefs_buffer_size='1KB';
+
+statement ok
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/perf_test/medium.csv');
+
+# Medium buffer (64KB)
+statement ok
+SET threefs_buffer_size='64KB';
+
+statement ok
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/perf_test/medium.csv');
+
+# Large buffer (1MB)
+statement ok
+SET threefs_buffer_size='1MB';
+
+statement ok
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/perf_test/medium.csv');
+
+# Test Parquet format performance
+statement ok
+COPY medium_data TO '3fs://3fs/test_threefs/perf_test/medium.parquet' (FORMAT PARQUET);
+
+# Local parquet reading
+statement ok
+COPY medium_data TO '/tmp/local_medium.parquet' (FORMAT PARQUET);
+
+statement ok
+SELECT COUNT(*) FROM read_parquet('/tmp/local_medium.parquet');
+
+# 3FS parquet reading
+statement ok
+SELECT COUNT(*) FROM read_parquet('3fs://3fs/test_threefs/perf_test/medium.parquet');
+
+# Test with filtering (pushdown)
+statement ok
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/perf_test/medium.csv') WHERE i > 50000;
+
+statement ok
+SELECT COUNT(*) FROM read_parquet('3fs://3fs/test_threefs/perf_test/medium.parquet') WHERE i > 50000;
+
+# Test with projection
+statement ok
+SELECT AVG(LENGTH(content)) FROM read_csv_auto('3fs://3fs/test_threefs/perf_test/medium.csv') WHERE i % 1000 = 0;
+
+statement ok
+SELECT AVG(LENGTH(content)) FROM read_parquet('3fs://3fs/test_threefs/perf_test/medium.parquet') WHERE i % 1000 = 0;
+
+# Clean up temporary tables
+statement ok
+DROP TABLE IF EXISTS medium_data; 

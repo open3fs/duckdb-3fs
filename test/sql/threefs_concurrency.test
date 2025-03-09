@@ -1,0 +1,103 @@
+# name: test/sql/threefs_concurrency.test
+# description: Test 3FS operations with concurrency
+# group: [threefs]
+
+require threefs
+
+# Setup test environment variables
+statement ok
+SET threefs_cluster='test_cluster';
+
+statement ok
+SET threefs_mount_root='/3fs';
+
+statement ok
+SET threefs_use_usrbio=true;
+
+# Prepare concurrent test data
+statement ok
+CREATE OR REPLACE TABLE concurrent_dirs AS 
+SELECT 'thread_' || i as thread_id 
+FROM range(1, 10) t(i);
+
+# Create data for multiple threads
+statement ok
+CREATE OR REPLACE TABLE thread_data AS 
+SELECT 
+    '3fs://3fs/test_threefs/concurrency_test/thread_' || t.thread_id || '/file_' || f.file_id || '.csv' as filepath,
+    t.thread_id,
+    f.file_id,
+    i, 
+    'Thread ' || t.thread_id || ' File ' || f.file_id || ' Row ' || i as content
+FROM range(1, 10) t(thread_id), 
+     range(1, 5) f(file_id),
+     range(1, 100) r(i);
+
+# Each thread writes multiple files (simulate concurrency using multi-row queries)
+statement ok
+SELECT * FROM (
+    SELECT 
+        COPY (SELECT i, content FROM thread_data WHERE thread_id=td.thread_id AND file_id=td.file_id) 
+        TO '3fs://3fs/test_threefs/concurrency_test/thread_' || td.thread_id || '/file_' || td.file_id || '.csv' (FORMAT CSV, HEADER) 
+    FROM (SELECT DISTINCT thread_id, file_id FROM thread_data) td
+);
+
+# Concurrent file reading (simulate concurrency using multi-row queries)
+statement ok
+SELECT * FROM (
+    SELECT 
+        COUNT(*) 
+    FROM read_csv_auto('3fs://3fs/test_threefs/concurrency_test/thread_' || thread_id || '/file_' || file_id || '.csv') 
+    WHERE thread_id IN (SELECT thread_id FROM concurrent_dirs) AND file_id IN (1, 2, 3, 4)
+);
+
+# Test concurrent operations on a shared file
+statement ok
+COPY (SELECT i, 'Shared file row ' || i as content FROM range(1, 1000) t(i)) 
+TO '3fs://3fs/test_threefs/concurrency_test/shared_file.csv' (FORMAT CSV, HEADER);
+
+# Multiple readers on shared file
+statement ok
+SELECT * FROM (
+    SELECT 
+        COUNT(*) 
+    FROM read_csv_auto('3fs://3fs/test_threefs/concurrency_test/shared_file.csv') 
+    WHERE i % thread_id = 0
+    GROUP BY thread_id
+    ORDER BY thread_id
+) t;
+
+# Test file locking with multiple readers and writers
+# First create a file
+statement ok
+COPY (SELECT i, 'Lock test file row ' || i as content FROM range(1, 100) t(i)) 
+TO '3fs://3fs/test_threefs/concurrency_test/lock_test.csv' (FORMAT CSV, HEADER);
+
+# Multiple readers should succeed
+statement ok
+SELECT * FROM (
+    SELECT 
+        COUNT(*) 
+    FROM read_csv_auto('3fs://3fs/test_threefs/concurrency_test/lock_test.csv') 
+    WHERE i % thread_id = 0
+    GROUP BY thread_id
+    ORDER BY thread_id
+) t;
+
+# Append to file while reading (should not conflict)
+statement ok
+COPY (SELECT i+100, 'Lock test file row ' || (i+100) as content FROM range(1, 100) t(i)) 
+TO '3fs://3fs/test_threefs/concurrency_test/lock_test.csv' (FORMAT CSV, HEADER, APPEND);
+
+# Verify appended data
+query I
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/concurrency_test/lock_test.csv');
+----
+199
+
+# Clean up temporary tables
+statement ok
+DROP TABLE IF EXISTS concurrent_dirs;
+
+statement ok
+DROP TABLE IF EXISTS thread_data; 

@@ -1,0 +1,96 @@
+# name: test/sql/threefs_basic.test
+# description: Test 3FS filesystem basic operations
+# group: [threefs]
+
+require threefs
+
+# Setup test environment variables
+statement ok
+SET threefs_cluster='test_cluster';
+
+statement ok
+SET threefs_mount_root='/3fs';
+
+statement ok
+SET threefs_use_usrbio=true;
+
+# Install parquet extension for testing different formats
+statement ok
+INSTALL parquet;
+
+statement ok
+LOAD parquet;
+
+# Create test tables
+statement ok
+CREATE OR REPLACE TABLE test_dirs AS 
+SELECT * FROM (VALUES 
+    ('dir1'), 
+    ('dir2')
+) t(dirname);
+
+statement ok
+CREATE OR REPLACE TABLE test_numbers AS 
+SELECT * FROM (VALUES 
+    (1, 'one'), 
+    (2, 'two'),
+    (3, 'three'),
+    (4, 'four'),
+    (5, 'five')
+) t(id, name);
+
+# Test CSV format
+statement ok
+COPY test_numbers TO '3fs://3fs/test_threefs/basic_test/dir1/numbers.csv' (FORMAT CSV, HEADER);
+
+# Verify file exists
+query I
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/basic_test/dir1/numbers.csv');
+----
+5
+
+# Test Parquet format
+statement ok
+COPY test_numbers TO '3fs://3fs/test_threefs/basic_test/dir1/numbers.parquet' (FORMAT PARQUET);
+
+# Verify file exists
+query I
+SELECT COUNT(*) FROM read_parquet('3fs://3fs/test_threefs/basic_test/dir1/numbers.parquet');
+----
+5
+
+# Install json extension for testing various formats
+statement ok
+INSTALL json;
+
+statement ok
+LOAD json;
+
+# Test JSON format
+statement ok
+COPY test_numbers TO '3fs://3fs/test_threefs/basic_test/dir2/numbers.json' (FORMAT JSON);
+
+# Verify file exists
+query I
+SELECT COUNT(*) FROM read_json_auto('3fs://3fs/test_threefs/basic_test/dir2/numbers.json');
+----
+5
+
+# Test reading with filters
+query I
+SELECT COUNT(*) FROM read_csv_auto('3fs://3fs/test_threefs/basic_test/dir1/numbers.csv') WHERE id > 2;
+----
+3
+
+# Test reading with projection
+query I
+SELECT name FROM read_csv_auto('3fs://3fs/test_threefs/basic_test/dir1/numbers.csv') WHERE id = 3;
+----
+three
+
+# Clean up temporary tables
+statement ok
+DROP TABLE IF EXISTS test_dirs;
+
+statement ok
+DROP TABLE IF EXISTS test_numbers; 

@@ -1,0 +1,97 @@
+# name: test/sql/threefs_io.test
+# description: Test 3FS filesystem I/O operations
+# group: [threefs]
+
+require threefs
+
+# Setup test environment variables
+statement ok
+SET threefs_cluster='test_cluster';
+
+statement ok
+SET threefs_mount_root='/3fs';
+
+statement ok
+SET threefs_use_usrbio=true;
+
+# Install parquet extension for testing various formats
+statement ok
+INSTALL parquet;
+
+statement ok
+LOAD parquet;
+
+# Generate test data
+statement ok
+CREATE OR REPLACE TABLE large_data AS 
+SELECT i, 'Row ' || i || repeat(' padding text', 10) as content 
+FROM range(1, 10000) t(i);
+
+# Write to CSV
+statement ok
+COPY large_data TO '/tmp/large_data.csv' (FORMAT CSV, HEADER);
+
+# Verify file exists and can be read
+query I
+SELECT COUNT(*) FROM read_csv_auto('/tmp/large_data.csv');
+----
+9999
+
+# Append to existing file
+statement ok
+COPY (
+  (SELECT * FROM read_csv_auto('/tmp/large_data.csv'))
+  UNION ALL
+  (SELECT i+10000, 'Row ' || (i+10000) || repeat(' padding text', 10) as content 
+   FROM range(1, 5000) t(i))
+) TO '/tmp/large_data.csv' (FORMAT CSV, HEADER);
+
+# Verify appended data
+query I
+SELECT COUNT(*) FROM read_csv_auto('/tmp/large_data.csv');
+----
+14998
+
+# Test partial reads
+query I
+SELECT COUNT(*) FROM (
+    SELECT * FROM read_csv_auto('/tmp/large_data.csv') LIMIT 100
+);
+----
+100
+
+query I
+SELECT COUNT(*) FROM (
+    SELECT * FROM read_csv_auto('/tmp/large_data.csv') LIMIT 100 OFFSET 10000
+);
+----
+100
+
+# Test Parquet format
+statement ok
+COPY large_data TO '/tmp/large_data.parquet' (FORMAT PARQUET);
+
+query I
+SELECT COUNT(*) FROM read_parquet('/tmp/large_data.parquet');
+----
+9999
+
+# Install json extension for testing various formats
+statement ok
+INSTALL json;
+
+statement ok
+LOAD json;
+
+# Test JSON format
+statement ok
+COPY (SELECT * FROM large_data LIMIT 1000) TO '/tmp/large_data.json' (FORMAT JSON);
+
+query I
+SELECT COUNT(*) FROM read_json_auto('/tmp/large_data.json');
+----
+1000
+
+# Clean up temporary tables
+statement ok
+DROP TABLE IF EXISTS large_data; 
