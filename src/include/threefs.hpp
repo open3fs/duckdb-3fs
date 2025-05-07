@@ -15,6 +15,7 @@ struct ThreeFSParams {
     // 3FS cluster related parameters
     string cluster_name;        // Cluster name
     string mount_root = "/";    // Mount point root directory
+    bool enable_debug_logging = false; // Enable debug logging
     
     // USRBIO related parameters
     bool use_usrbio = true;                // Whether to use USRBIO API

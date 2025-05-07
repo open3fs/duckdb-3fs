@@ -25,7 +25,7 @@ static void LoadInternal(DatabaseInstance &instance) {
         fs.RegisterSubSystem(make_uniq<ThreeFSFileSystem>(buffer_manager));
         
         // Log success message
-        fprintf(stderr, "Successfully registered 3FS extension\n");
+        //fprintf(stderr, "Successfully registered 3FS extension\n");
     } catch (std::exception &e) {
         throw IOException("Failed to initialize 3FS extension: %s", e.what());
     }
@@ -39,7 +39,10 @@ void ThreeFSExtension::Load(DuckDB &db) {
     
     // Register extension parameter options
     auto &config = DBConfig::GetConfig(*db.instance);
-    
+
+    // Register 3FS debug parameters
+    config.AddExtensionOption("threefs_enable_debug_logging", "Enable verbose debug logging for 3FS operations to standard error", LogicalType::BOOLEAN);
+
     // Register 3FS connection parameters
     config.AddExtensionOption("threefs_cluster", "Specifies the 3FS cluster name", LogicalType::VARCHAR);
     config.AddExtensionOption("threefs_mount_root", "Specifies the mount root path for 3FS", LogicalType::VARCHAR);

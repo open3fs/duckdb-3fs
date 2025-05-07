@@ -29,6 +29,7 @@
 #include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/windows.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 
@@ -111,6 +112,11 @@ ThreeFSParams ThreeFSParams::ReadFrom(optional_ptr<FileOpener> opener)
   // Set mount root directory
   if (opener->TryGetCurrentSetting("threefs_mount_root", value)) {
     params.mount_root = value.ToString();
+  }
+
+  // Set enable debug logging
+  if (opener->TryGetCurrentSetting("threefs_enable_debug_logging", value)) {
+    params.enable_debug_logging = value.GetValue<bool>();
   }
 
   // Set whether to use USRBIO
@@ -295,7 +301,9 @@ struct ThreeFSFileHandle : public FileHandle {
 
   void Close() override {
     if (fd != -1) {
-      fprintf(stderr, "Closing file handle: %s, fd: %d\n", path.c_str(), fd);
+      if (params.enable_debug_logging) {
+        fprintf(stderr, "Closing file handle: %s, fd: %d\n", path.c_str(), fd);
+      }
       hf3fs_dereg_fd(fd);
       close(fd);
       fd = -1;
@@ -546,8 +554,10 @@ unique_ptr<FileHandle> ThreeFSFileSystem::OpenFile(
                       {{"errno", std::to_string(rc)}});
   }
 
-  fprintf(stderr, "OpenFile: File handle: %s, fd: %d, is_append: %d\n", path.c_str(), fd, open_flags & O_APPEND);
   ThreeFSParams params = ThreeFSParams::ReadFrom(opener);
+  if (params.enable_debug_logging) {
+    fprintf(stderr, "OpenFile: File handle: %s, fd: %d, is_append: %d\n", path.c_str(), fd, open_flags & O_APPEND);
+  }
   return make_uniq<ThreeFSFileHandle>(*this, path, fd, flags, params, open_flags & O_APPEND);
 }
 
@@ -555,7 +565,7 @@ void ThreeFSFileSystem::SetFilePointer(FileHandle &handle, idx_t location) {
   int fd = handle.Cast<ThreeFSFileHandle>().fd;
   off_t offset = lseek(fd, UnsafeNumericCast<off_t>(location), SEEK_SET);
   if (offset == (off_t)-1) {
-    throw IOException("Could not seek to location %lld for file \"%s\": %s",
+    throw IOException("Could not seek to location %lu for file \"%s\": %s",
                       {{"errno", std::to_string(errno)}}, location, handle.path,
                       strerror(errno));
   }
@@ -587,7 +597,9 @@ int64_t ThreeFSFileSystem::ReadImpl(FileHandle &handle, void *buffer, int64_t nr
   uint8_t *buf_ptr = static_cast<uint8_t *>(buffer);
   int64_t bytes_remaining = nr_bytes;
   idx_t current_offset = location;
-  fprintf(stderr, "Read: File handle: %s, location: %lld, nr_bytes: %lld\n", threefs_handle.path.c_str(), current_offset, nr_bytes);
+  if (threefs_handle.params.enable_debug_logging) {
+    fprintf(stderr, "Read: File handle: %s, location: %lu, nr_bytes: %ld\n", threefs_handle.path.c_str(), current_offset, nr_bytes);
+  }
 
   // Block processing large data
   while (bytes_remaining > 0) {
@@ -596,7 +608,9 @@ int64_t ThreeFSFileSystem::ReadImpl(FileHandle &handle, void *buffer, int64_t nr
         std::min<size_t>(bytes_remaining, resource->params.iov_size);
 
     // Prepare I/O request
-    fprintf(stderr, "Prepare read I/O request for file %s, location: %lld, nr_bytes: %lld\n", threefs_handle.path.c_str(), current_offset, current_chunk_size);
+    if (threefs_handle.params.enable_debug_logging) {
+      fprintf(stderr, "Prepare read I/O request for file %s, location: %lu, nr_bytes: %ld\n", threefs_handle.path.c_str(), current_offset, current_chunk_size);
+    }
     int ret =
         hf3fs_prep_io(&resource->ior_read, &resource->iov,
                       true,                // Read operation
@@ -648,7 +662,9 @@ int64_t ThreeFSFileSystem::ReadImpl(FileHandle &handle, void *buffer, int64_t nr
     }
   }
 
-  fprintf(stderr, "Successfully read %lld bytes from offset %lld of file %s\n", nr_bytes - bytes_remaining, location, threefs_handle.path.c_str());
+  if (threefs_handle.params.enable_debug_logging) {
+    fprintf(stderr, "Successfully read %ld bytes from offset %lu of file %s\n", nr_bytes - bytes_remaining, location, threefs_handle.path.c_str());
+  }
   return nr_bytes - bytes_remaining;
 }
 
@@ -694,7 +710,10 @@ void ThreeFSFileSystem::Write(FileHandle &handle, void *buffer,
   if (threefs_handle.is_append) {
     current_offset = GetFileSize(handle);
   }
-  fprintf(stderr, "Write: File handle: %s, location: %lld, nr_bytes: %lld\n", threefs_handle.path.c_str(), current_offset, nr_bytes);
+
+  if (threefs_handle.params.enable_debug_logging) {
+    fprintf(stderr, "Write: File handle: %s, location: %lu, nr_bytes: %ld\n", threefs_handle.path.c_str(), current_offset, nr_bytes);
+  }
 
   // Block processing large data
   while (bytes_remaining > 0) {
@@ -706,7 +725,10 @@ void ThreeFSFileSystem::Write(FileHandle &handle, void *buffer,
     memcpy(resource->iov.base, buf_ptr, current_chunk_size);
 
     // Prepare I/O request
-    fprintf(stderr, "Prepare write I/O request for file %s, location: %lld, nr_bytes: %lld\n", threefs_handle.path.c_str(), current_offset, current_chunk_size);
+    if (threefs_handle.params.enable_debug_logging) {
+      fprintf(stderr, "Prepare write I/O request for file %s, location: %lu, nr_bytes: %ld\n", threefs_handle.path.c_str(), current_offset, current_chunk_size);
+    }
+
     int ret =
         hf3fs_prep_io(&resource->ior_write, &resource->iov,
                       false,               // Write operation
@@ -754,7 +776,9 @@ void ThreeFSFileSystem::Write(FileHandle &handle, void *buffer,
     current_offset += bytes_written;
   }
 
-  fprintf(stderr, "Successfully written %lld bytes to offset %lld of file %s\n", nr_bytes - bytes_remaining, location, threefs_handle.path.c_str());
+  if (threefs_handle.params.enable_debug_logging) {
+    fprintf(stderr, "Successfully written %ld bytes to offset %lu of file %s\n", nr_bytes - bytes_remaining, location, threefs_handle.path.c_str());
+  }
 }
 
 int64_t ThreeFSFileSystem::Write(FileHandle &handle, void *buffer,
@@ -817,8 +841,11 @@ FileType ThreeFSFileSystem::GetFileType(FileHandle &handle) {
 }
 
 void ThreeFSFileSystem::Truncate(FileHandle &handle, int64_t new_size) {
-  int fd = handle.Cast<ThreeFSFileHandle>().fd;
-  fprintf(stderr, "Truncate: File handle: %s, new_size: %lld\n", handle.path.c_str(), new_size);
+  auto &threefs_handle = handle.Cast<ThreeFSFileHandle>();
+  int fd = threefs_handle.fd;
+  if (threefs_handle.params.enable_debug_logging) {
+    fprintf(stderr, "Truncate: File handle: %s, new_size: %ld\n", handle.path.c_str(), new_size);
+  }
   if (ftruncate(fd, new_size) != 0) {
     throw IOException("Could not truncate file \"%s\": %s",
                       {{"errno", std::to_string(errno)}}, handle.path,
@@ -827,8 +854,11 @@ void ThreeFSFileSystem::Truncate(FileHandle &handle, int64_t new_size) {
 }
 
 bool ThreeFSFileSystem::DirectoryExists(const string &directory,
-                                        optional_ptr<FileOpener> opener) {
-  fprintf(stderr, "DirectoryExists: directory: %s\n", directory.c_str());
+                                      optional_ptr<FileOpener> opener) {
+  ThreeFSParams params = ThreeFSParams::ReadFrom(opener);
+  if (params.enable_debug_logging) {
+    fprintf(stderr, "DirectoryExists: directory: %s\n", directory.c_str());
+  }
   if (!directory.empty()) {
     auto normalized_dir = NormalizeLocalPath(directory);
     if (access(normalized_dir, 0) == 0) {
@@ -846,9 +876,11 @@ bool ThreeFSFileSystem::DirectoryExists(const string &directory,
 void ThreeFSFileSystem::CreateDirectory(const string &directory,
                                         optional_ptr<FileOpener> opener) {
   struct stat st;
-
+  ThreeFSParams params = ThreeFSParams::ReadFrom(opener);
+  if (params.enable_debug_logging) {
+    fprintf(stderr, "CreateDirectory: directory: %s\n", directory.c_str());
+  }
   auto normalized_dir = NormalizeLocalPath(directory);
-  fprintf(stderr, "CreateDirectory: directory: %s\n", directory.c_str());
   if (stat(normalized_dir, &st) != 0) {
     /* Directory does not exist. EEXIST for race condition */
     if (mkdir(normalized_dir, 0755) != 0 && errno != EEXIST) {
@@ -864,8 +896,12 @@ void ThreeFSFileSystem::CreateDirectory(const string &directory,
   }
 }
 
-int RemoveDirectoryFastOrRecursive(const char *path) {
-  fprintf(stderr, "RemoveDirectoryFastOrRecursive: path: %s\n", path);
+int RemoveDirectoryFastOrRecursive(const char *path,
+                                   optional_ptr<FileOpener> opener) {
+  ThreeFSParams params = ThreeFSParams::ReadFrom(opener);
+  if (params.enable_debug_logging) {
+    fprintf(stderr, "RemoveDirectoryFastOrRecursive: path: %s\n", path);
+  }
   // Check if the path is on a 3fs filesystem
   char hf3fs_mount_point[256];
   
@@ -914,7 +950,7 @@ int RemoveDirectoryFastOrRecursive(const char *path) {
         snprintf(buf, len, "%s/%s", path, p->d_name);
         if (!stat(buf, &statbuf)) {
           if (S_ISDIR(statbuf.st_mode)) {
-            r2 = RemoveDirectoryFastOrRecursive(buf);
+            r2 = RemoveDirectoryFastOrRecursive(buf, opener);
           } else {
             r2 = unlink(buf);
           }
@@ -934,12 +970,15 @@ int RemoveDirectoryFastOrRecursive(const char *path) {
 void ThreeFSFileSystem::RemoveDirectory(const string &directory,
                                         optional_ptr<FileOpener> opener) {
   auto normalized_dir = NormalizeLocalPath(directory);
-  RemoveDirectoryFastOrRecursive(normalized_dir);
+  RemoveDirectoryFastOrRecursive(normalized_dir, opener);
 }
 
 void ThreeFSFileSystem::RemoveFile(const string &filename,
                                    optional_ptr<FileOpener> opener) {
-  fprintf(stderr, "RemoveFile: filename: %s\n", filename.c_str());
+  ThreeFSParams params = ThreeFSParams::ReadFrom(opener);
+  if (params.enable_debug_logging) {
+    fprintf(stderr, "RemoveFile: filename: %s\n", filename.c_str());
+  }
   auto normalized_file = NormalizeLocalPath(filename);
   if (std::remove(normalized_file) != 0) {
     throw IOException("Could not remove file \"%s\": %s",
@@ -952,7 +991,10 @@ bool ThreeFSFileSystem::ListFiles(
     const string &directory,
     const std::function<void(const string &, bool)> &callback,
     FileOpener *opener) {
-  fprintf(stderr, "ListFiles: directory: %s\n", directory.c_str());
+  ThreeFSParams params = ThreeFSParams::ReadFrom(opener);
+  if (params.enable_debug_logging) {
+    fprintf(stderr, "ListFiles: directory: %s\n", directory.c_str());
+  }
   auto normalized_dir = NormalizeLocalPath(directory);
   auto dir = opendir(normalized_dir);
   if (!dir) {
@@ -990,8 +1032,11 @@ bool ThreeFSFileSystem::ListFiles(
 }
 
 void ThreeFSFileSystem::FileSync(FileHandle &handle) {
-  int fd = handle.Cast<ThreeFSFileHandle>().fd;
-  fprintf(stderr, "FileSync: File handle: %s, fd: %d\n", handle.path.c_str(), fd);
+  auto &threefs_handle = handle.Cast<ThreeFSFileHandle>();
+  int fd = threefs_handle.fd;
+  if (threefs_handle.params.enable_debug_logging) {
+    fprintf(stderr, "FileSync: File handle: %s, fd: %d\n", handle.path.c_str(), fd);
+  }
   if (fsync(fd) != 0) {
     throw FatalException("fsync failed!");
   }
@@ -1001,7 +1046,10 @@ void ThreeFSFileSystem::MoveFile(const string &source, const string &target,
                                  optional_ptr<FileOpener> opener) {
   auto normalized_source = NormalizeLocalPath(source);
   auto normalized_target = NormalizeLocalPath(target);
-  fprintf(stderr, "MoveFile: source: %s, target: %s\n", normalized_source, normalized_target);
+  ThreeFSParams params = ThreeFSParams::ReadFrom(opener);
+  if (params.enable_debug_logging) {
+    fprintf(stderr, "MoveFile: source: %s, target: %s\n", normalized_source, normalized_target);
+  }
   //! FIXME: rename does not guarantee atomicity or overwriting target file if
   //! it exists
   if (rename(normalized_source, normalized_target) != 0) {
@@ -1290,12 +1338,12 @@ vector<string> ThreeFSFileSystem::Glob(const string &path, FileOpener *opener) {
 
 // Initialize 3FS resources
 void InitializeThreeFS() {
-  fprintf(stderr, "InitializeThreeFS\n");
+  //fprintf(stderr, "InitializeThreeFS\n");
   USRBIOResourceManager::instance = new USRBIOResourceManager();
 }
 
 void DeinitializeThreeFS() {
-  fprintf(stderr, "DeinitializeThreeFS\n");
+  //fprintf(stderr, "DeinitializeThreeFS\n");
   if (USRBIOResourceManager::instance) {
     delete USRBIOResourceManager::instance;
     USRBIOResourceManager::instance = nullptr;
@@ -1303,8 +1351,8 @@ void DeinitializeThreeFS() {
 }
 
 bool ThreeFSFileSystem::CanHandleFile(const string &fpath) {
-  // Check if the path starts with "3fs://"
-  return StringUtil::StartsWith(fpath, "3fs://");
+  // Check if the path starts with "3fs://" or "/3fs/"
+  return (StringUtil::StartsWith(fpath, "3fs://") || StringUtil::StartsWith(fpath, "/3fs/"));
 }
 
 }  // namespace duckdb
