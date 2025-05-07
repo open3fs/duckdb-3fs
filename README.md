@@ -113,7 +113,7 @@ SET threefs_mount_root='/path/to/3fs/mount';
 SET threefs_use_usrbio=true;
 
 -- Set custom buffer size (optional)
-SET threefs_buffer_size=16384;
+SET threefs_iov_size=16384;
 ```
 
 ### Basic Usage
@@ -185,7 +185,7 @@ You can create additional tests by following the DuckDB test format. Test files 
 ## Troubleshooting
 
 - If the extension fails to load with errors about missing symbols, ensure all dependencies are properly installed and linked.
-- For I/O performance issues, try adjusting the buffer size with `SET threefs_buffer_size=<size>`.
+- For I/O performance issues, try adjusting the buffer size with `SET threefs_iov_size=<size>`.
 - If experiencing permission errors, check that your 3FS mount point has appropriate permissions.
 
 ## License
