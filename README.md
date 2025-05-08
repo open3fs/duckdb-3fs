@@ -84,6 +84,17 @@ Or pass the paths during the build:
 make DEEPSEEK_3FS_INCLUDE_DIR=/path/to/3fs/include DEEPSEEK_3FS_LIB_DIR=/path/to/3fs/lib
 ```
 
+### Building Python Duckdb
+
+If you want to use python duckdb with 3FS extension, you can build and install:
+```bash
+cd /path/duckdb-3fs/
+GEN=ninja make -j$(nproc) BUILD_PYTHON=1 CORE_EXTENSIONS="httpfs"
+cd /path/duckdb-3fs/duckdb/tools/pythonpkg
+python3 -m pip install .
+```
+
+
 ## Using the Extension
 
 ### Loading the Extension
@@ -130,6 +141,25 @@ SELECT * FROM read_parquet('3fs://path/to/data.parquet');
 -- Write query results to 3FS
 COPY (SELECT * FROM my_table) TO '3fs://path/to/output.parquet' (FORMAT PARQUET);
 ```
+
+## Using the Extension in Python
+```python
+import duckdb
+con = duckdb.connect(config={'allow_unsigned_extensions': True})
+con.install_extension('/root/duckdb-3fs/build/release/extension/threefs/threefs.duckdb_extension')
+con.load_extension('threefs')
+con.execute("SET threefs_cluster='open3fs';")
+con.execute("SET threefs_mount_root='/3fs/';")
+con.execute("SET threefs_use_usrbio=true;")
+con.execute("SET threefs_iov_size=16384;")
+con.execute("SET threefs_enable_debug_logging=true;")
+data = con.sql("SELECT * FROM read_parquet('/3fs/duckdb/prices.parquet')")
+print(data)
+con.sql("COPY (SELECT * FROM read_parquet('/3fs/duckdb/prices.parquet')) TO '/3fs/duckdb/output.parquet' (FORMAT PARQUET);")
+data = con.sql("SELECT * FROM read_parquet('3fs://3fs/duckdb/prices.parquet')")
+print(data)
+```
+
 
 ## Testing
 
