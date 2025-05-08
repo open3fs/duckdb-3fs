@@ -14,7 +14,7 @@ The 3FS extension integrates DuckDB with the high-performance 3FS distributed fi
 
 ## Features
 
-- **Direct Data Access**: Access data stored in 3FS using the `3fs://` URI prefix
+- **Direct Data Access**: Access data stored in 3FS using the `3fs://` URI prefix and /3fs/ path prefix
 - **File Operations**: Create, read, write, append, delete, copy, and move files
 - **Directory Operations**: Create, list, and delete directories
 - **Format Support**: Native support for multiple formats, including:
