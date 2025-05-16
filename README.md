@@ -220,8 +220,4 @@ You can create additional tests by following the DuckDB test format. Test files 
 
 ## License
 
-This project is licensed under [LICENSE INFORMATION].
-
-## Acknowledgments
-
-This extension integrates DuckDB with the 3FS distributed file system developed by [ORGANIZATION]. 
+This project is licensed under the [MIT License](LICENSE).
